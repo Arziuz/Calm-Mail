@@ -1,4 +1,5 @@
 # Calm Mail 🛡️
+<img width="1024" height="444" alt="image" src="https://github.com/user-attachments/assets/18163672-eb1f-4c1b-aa68-704afd0a15d3" />
 
 ## Credit
 Created by **Arzius**.
