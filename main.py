@@ -53,7 +53,6 @@ def main(page: ft.Page):
     # --- UI STATE ---
     log_column = ft.Column(spacing=2, scroll=ft.ScrollMode.ALWAYS, auto_scroll=True, expand=True)
     chat_column = ft.Column(spacing=10, scroll=ft.ScrollMode.ALWAYS, auto_scroll=True, expand=True)
-    
     status_dot = ft.Container(width=12, height=12, border_radius=6, bgcolor="red")
     status_text = ft.Text("SYSTEM OFFLINE", color="red", weight="bold", size=12)
 
@@ -73,7 +72,7 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Text(text, selectable=True),
                     bgcolor=color, padding=10, border_radius=8,
-                    width=300 # Max width for bubble
+                    width=300 
                 )
             ], alignment=align)
         )
@@ -82,34 +81,23 @@ def main(page: ft.Page):
     def process_chat_command(e):
         user_text = txt_chat_input.value
         if not user_text: return
-        
         txt_chat_input.value = ""
         add_chat_message("user", user_text)
         page.update()
-
         threading.Thread(target=run_chat_ai, args=(user_text,), daemon=True).start()
 
     def run_chat_ai(user_text):
         try:
             prompt = f"""
-            You are the Configuration Manager for Calm Mail.
+            You are the Config Manager for Calm Mail.
             User Request: "{user_text}"
-            
             Current Config:
             - Blacklist: {config['blacklist_domains']}
             - Labels: {config['fixed_labels']}
-            
-            Task: Decide how to modify the config based on user request.
+            Task: Decide how to modify the config.
             Supported Actions: BLACKLIST_ADD (domain), LABEL_CREATE (name), EXPLAIN.
-            
-            Output JSON ONLY:
-            {{
-                "action": "BLACKLIST_ADD" | "LABEL_CREATE" | "EXPLAIN",
-                "target": "domain_or_label",
-                "response": "Short confirmation message."
-            }}
+            Output JSON ONLY: {{ "action": "BLACKLIST_ADD", "target": "domain", "response": "msg" }}
             """
-            
             res = ollama.chat(model=config['model'], messages=[{'role':'user', 'content':prompt}])
             content = res['message']['content']
             start = content.find('{')
@@ -135,7 +123,6 @@ def main(page: ft.Page):
                 logger(f"⚙ Config Change: {action} -> {target}", "yellow")
             
             add_chat_message("ai", reply)
-
         except Exception as e:
             add_chat_message("ai", f"Error: {e}")
 
@@ -173,8 +160,6 @@ def main(page: ft.Page):
             # CONTINUOUS LOOP
             while is_running:
                 logger(f"Scanning Batch ({config['batch_size']})...", "cyan")
-                
-                # 1. Fetch Batch
                 try:
                     msgs = service.users().messages().list(userId='me', q='label:INBOX', maxResults=config['batch_size']).execute().get('messages', [])
                 except Exception as e: 
@@ -189,7 +174,6 @@ def main(page: ft.Page):
                 trash_ids = []
                 move_map = {}
                 
-                # 2. Process Batch
                 for msg in msgs:
                     if not is_running: break
                     try:
@@ -197,6 +181,8 @@ def main(page: ft.Page):
                         head = txt['payload']['headers']
                         sub = next((h['value'] for h in head if h['name']=='Subject'), "No Subject")
                         send = next((h['value'] for h in head if h['name']=='From'), "Unknown")
+                        snip = txt.get('snippet', '') # Content Snippet
+
                         match = re.search(r'<(.+?)>', send)
                         email = match.group(1) if match else send
                         domain = email.split('@')[-1].lower().strip() if '@' in email else "unknown"
@@ -213,15 +199,35 @@ def main(page: ft.Page):
                                  if any(x.lower() in email.lower() for x in r):
                                      action, label = "LABEL", l; break
                         
-                        # C. AI
+                        # C. AI (Improved Prompt)
                         if action=="SKIP":
-                             prompt_ai = f"Sender: {email}. Sub: {sub}. Labels: {json.dumps(config['fixed_labels'])}. Rules: Quora/Reddit/Social=DELETE. Output JSON {{'category': 'Label' or 'DELETE'}}."
+                             prompt_ai = f"""
+                             Analyze email.
+                             From: {email} ({domain})
+                             Subject: {sub}
+                             Content: {snip[:200]}
+                             
+                             Task: Classify into ONE existing label or 'DELETE'.
+                             Available Labels: {json.dumps(config['fixed_labels'])}
+                             
+                             Rules:
+                             1. Spam/Social/Promos = DELETE
+                             2. Receipts/Bills = Finance
+                             3. If unsure, use INBOX (Do not invent 'Label' or 'Folder').
+                             4. Output JSON: {{ "category": "LabelName" }}
+                             """
                              try:
                                  res = ollama.chat(model=config['model'], messages=[{'role':'user', 'content':prompt_ai}])
                                  dec = json.loads(res['message']['content'][res['message']['content'].find('{'):res['message']['content'].rfind('}')+1])
                                  c = dec.get('category','INBOX')
+                                 
+                                 # SANITY CHECK
+                                 banned = ["LABEL", "FOLDER", "CATEGORY", "EMAIL", "UNKNOWN", "NONE"]
+                                 if c.upper() in banned: c = "INBOX"
+                                 
                                  if c.upper() in ['DELETE','SPAM']: action="DELETE"
-                                 elif c.upper()!="INBOX": action, label = "LABEL", c
+                                 elif c.upper() != "INBOX": 
+                                     action, label = "LABEL", c
                              except: pass
                         
                         # Queue Action
@@ -229,16 +235,20 @@ def main(page: ft.Page):
                             logger(f"🗑 {domain}", "#ff4444")
                             trash_ids.append(msg['id'])
                         elif action=="LABEL": 
-                            logger(f"📂 {domain} -> {label}", "#44aaff")
-                            lid = label_cache.get(label.lower())
-                            if not lid:
-                                try: 
-                                    l=service.users().labels().create(userId='me', body={"name":label,"labelListVisibility":"labelShow","messageListVisibility":"show"}).execute()
-                                    lid=l['id']; label_cache[label.lower()]=lid
-                                except: pass
-                            if lid:
-                                if lid not in move_map: move_map[lid]=[]
-                                move_map[lid].append(msg['id'])
+                            # Double check label validity
+                            if label.lower() in ["label", "folder"]: 
+                                logger(f"⚠ AI Hallucination blocked ({label})", "orange")
+                            else:
+                                logger(f"📂 {domain} -> {label}", "#44aaff")
+                                lid = label_cache.get(label.lower())
+                                if not lid:
+                                    try: 
+                                        l=service.users().labels().create(userId='me', body={"name":label,"labelListVisibility":"labelShow","messageListVisibility":"show"}).execute()
+                                        lid=l['id']; label_cache[label.lower()]=lid
+                                    except: pass
+                                if lid:
+                                    if lid not in move_map: move_map[lid]=[]
+                                    move_map[lid].append(msg['id'])
                     except: pass
                 
                 # 3. EXECUTE BATCH
@@ -254,7 +264,7 @@ def main(page: ft.Page):
                     service.users().messages().batchModify(userId='me', body={"ids":ids,"addLabelIds":[l],"removeLabelIds":["INBOX"]}).execute()
                 
                 logger("Batch Done. Syncing...", "#ffffff")
-                time.sleep(3) # Wait for Gmail to index changes
+                time.sleep(3) 
 
         except Exception as e: logger(f"Error: {e}", "red")
         stop_process()
@@ -291,14 +301,10 @@ def main(page: ft.Page):
         config['blacklist_domains'] = [x.strip() for x in txt_black.value.split('\n') if x.strip()]
         new_labels = [x.strip() for x in txt_labels.value.split('\n') if x.strip()]
         config['fixed_labels'] = new_labels
-        
         if dd_labels.value:
             config['label_rules'][dd_labels.value] = [x.strip() for x in txt_rules.value.split('\n') if x.strip()]
-            
-        # Cleanup Orphans
         keys_to_delete = [k for k in config['label_rules'] if k not in new_labels]
         for k in keys_to_delete: del config['label_rules'][k]
-
         save_config(config)
         update_dropdown()
         page.snack_bar = ft.SnackBar(ft.Text("Saved!"))
