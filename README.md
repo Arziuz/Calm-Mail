@@ -36,7 +36,7 @@ Calm Mail is a local, privacy-first email agent that runs entirely on your Windo
 
 If you want to modify the code or build it yourself:
 1. Clone the repo:
-git clone https://github.com/YOUR_USERNAME/Calm-Mail.git
+git clone https://github.com/Arzius/Calm-Mail.git
 cd Calm-Mail
 2. Install dependencies
 pip install -r requirements.txt
