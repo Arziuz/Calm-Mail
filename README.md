@@ -9,8 +9,6 @@ Calm Mail is a local, privacy-first email agent that runs entirely on your Windo
 
 **Zero Data leaves your device.** No subscription fees. No cloud servers reading your emails.
 
-![Calm Mail UI](https://via.placeholder.com/800x400?text=Calm+Mail+Dashboard+Preview)
-
 ## 🚀 Features
 
 - **🔒 100% Sovereign:** Powered by your local hardware (Llama 3 / Qwen via Ollama).
